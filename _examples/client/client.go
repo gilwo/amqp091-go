@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -14,6 +15,11 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+var (
+	Addr = "amqp://guest:guest@localhost:5672/"
+)
+
 
 // This exports a Client object that wraps this library. It
 // automatically reconnects when the connection fails, and
@@ -27,8 +33,8 @@ import (
 // Stop & restart RabbitMQ to see how the queue reacts.
 func publish(done chan struct{}) {
 	queueName := "job_queue"
-	addr := "amqp://guest:guest@localhost:5672/"
-	queue := New(queueName, addr)
+	addr := Addr
+	queue := NewClient(queueName, addr, "publish")
 	message := []byte("message")
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second*20))
@@ -56,8 +62,8 @@ loop:
 
 func consume(done chan struct{}) {
 	queueName := "job_queue"
-	addr := "amqp://guest:guest@localhost:5672/"
-	queue := New(queueName, addr)
+	addr := Addr
+	queue := NewClient(queueName, addr, "consume")
 
 	// Give the connection sometime to set up
 	<-time.After(time.Second)
@@ -136,6 +142,7 @@ type Client struct {
 	notifyChanClose chan *amqp.Error
 	notifyConfirm   chan amqp.Confirmation
 	isReady         bool
+	desc            string
 }
 
 const (
@@ -157,13 +164,17 @@ var (
 
 // New creates a new consumer state instance, and automatically
 // attempts to connect to the server.
-func New(queueName, addr string) *Client {
+func NewClient(queueName, addr, who string) *Client {
+	prefix := func(lvl string) string {
+		return fmt.Sprintf("%s(%s) ", lvl, who)
+	}
 	client := Client{
 		m:         &sync.Mutex{},
-		infolog:   log.New(os.Stdout, "[INFO] ", log.LstdFlags|log.Lmsgprefix),
-		errlog:    log.New(os.Stderr, "[ERROR] ", log.LstdFlags|log.Lmsgprefix),
+		infolog:   log.New(os.Stdout, prefix("[INFO] "), log.LstdFlags|log.Lmsgprefix),
+		errlog:    log.New(os.Stderr, prefix("[ERROR] "), log.LstdFlags|log.Lmsgprefix),
 		queueName: queueName,
 		done:      make(chan bool),
+		desc:      who,
 	}
 	go client.handleReconnect(addr)
 	return &client
@@ -199,7 +210,9 @@ func (client *Client) handleReconnect(addr string) {
 
 // connect will create a new AMQP connection
 func (client *Client) connect(addr string) (*amqp.Connection, error) {
-	conn, err := amqp.Dial(addr)
+	config := amqp.Config{Properties: amqp.NewConnectionProperties()}
+	config.Properties.SetClientConnectionName(client.desc)
+	conn, err := amqp.DialConfig(addr, config)
 	if err != nil {
 		return nil, err
 	}
